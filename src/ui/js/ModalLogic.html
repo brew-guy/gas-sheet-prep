@@ -1,0 +1,488 @@
+<script>
+/**
+ * Data Importer Logic
+ */
+
+// STATE
+let STATE = {
+  rawParsedData: [],    // The raw 2D array from the file
+  availableSheets: [],  // List of strings
+  targetHeaders: [],    // Headers of the currently selected target sheet
+  savedFlowsCache: {},  // Cache of loaded rules keyed by sheet name
+  overrideHeaderWarning: false, // Flag if user confirmed mismatch
+  workbook: null // Store workbook for multi-sheet Excel files
+};
+
+// DOM ELEMENTS
+const EL = {
+  fileInput: document.getElementById('fileInput'),
+  fileInfo: document.getElementById('fileInfo'),
+  sourceSheetGroup: document.getElementById('sourceSheetGroup'),
+  sourceSheetSelect: document.getElementById('sourceSheetSelect'),
+  skipTop: document.getElementById('skipTop'),
+  skipBottom: document.getElementById('skipBottom'),
+  skipLeft: document.getElementById('skipLeft'),
+  skipRight: document.getElementById('skipRight'),
+  replacementsContainer: document.getElementById('replacementsContainer'),
+  addReplacementBtn: document.getElementById('addReplacementBtn'),
+  applyReplacementsBtn: document.getElementById('applyReplacementsBtn'),
+  destTypeRadios: document.getElementsByName('destType'),
+  existingSheetInput: document.getElementById('existingSheetInput'),
+  newSheetInput: document.getElementById('newSheetInput'),
+  targetSheetSelect: document.getElementById('targetSheetSelect'),
+  writeMethodRadios: document.getElementsByName('writeMethod'),
+  headerWarning: document.getElementById('headerWarning'),
+  newSheetName: document.getElementById('newSheetName'),
+  importBtn: document.getElementById('importBtn'),
+  statusMessage: document.getElementById('statusMessage'),
+  previewThead: document.getElementById('previewThead'),
+  previewTbody: document.getElementById('previewTbody'),
+  previewCount: document.getElementById('previewCount'),
+  confirmOverlay: document.getElementById('confirmOverlay'),
+  confirmCancelBtn: document.getElementById('confirmCancelBtn'),
+  confirmProceedBtn: document.getElementById('confirmProceedBtn'),
+  helpBtn: document.getElementById('helpBtn'),
+  helpOverlay: document.getElementById('helpOverlay'),
+  closeHelpBtn: document.getElementById('closeHelpBtn')
+};
+
+// INITIALIZATION
+document.addEventListener('DOMContentLoaded', () => {
+  // Fetch available sheets
+  google.script.run.withSuccessHandler(sheets => {
+    STATE.availableSheets = sheets;
+    sheets.forEach(sheet => {
+      const opt = document.createElement('option');
+      opt.value = sheet;
+      opt.textContent = sheet;
+      EL.targetSheetSelect.appendChild(opt);
+    });
+    // Trigger initial load for first sheet
+    if(sheets.length > 0) handleTargetSheetChange();
+  }).runRouter('getAvailableSheets');
+
+  // Attach Listeners
+  EL.fileInput.addEventListener('change', handleFileSelect);
+  EL.sourceSheetSelect.addEventListener('change', (e) => loadSourceSheet(e.target.value));
+  EL.skipTop.addEventListener('input', updatePreviewAndValidation);
+  EL.skipBottom.addEventListener('input', updatePreviewAndValidation);
+  EL.skipLeft.addEventListener('input', updatePreviewAndValidation);
+  EL.skipRight.addEventListener('input', updatePreviewAndValidation);
+  EL.addReplacementBtn.addEventListener('click', () => addReplacementRow());
+  EL.applyReplacementsBtn.addEventListener('click', updatePreviewAndValidation);
+  
+  EL.destTypeRadios.forEach(radio => radio.addEventListener('change', handleDestTypeChange));
+  EL.targetSheetSelect.addEventListener('change', handleTargetSheetChange);
+  EL.newSheetName.addEventListener('input', validateForm);
+  
+  EL.importBtn.addEventListener('click', executeImport);
+
+  EL.confirmCancelBtn.addEventListener('click', () => {
+    EL.confirmOverlay.style.display = 'none';
+  });
+  
+  EL.confirmProceedBtn.addEventListener('click', () => {
+    EL.confirmOverlay.style.display = 'none';
+    STATE.overrideHeaderWarning = true;
+    executeImport();
+  });
+
+  if (EL.helpBtn) {
+    EL.helpBtn.addEventListener('click', () => {
+      EL.helpOverlay.style.display = 'flex';
+    });
+  }
+
+  if (EL.closeHelpBtn) {
+    EL.closeHelpBtn.addEventListener('click', () => {
+      EL.helpOverlay.style.display = 'none';
+    });
+  }
+
+  // Add one empty replacement row to start
+  addReplacementRow();
+});
+
+// EVENT HANDLERS
+function handleFileSelect(e) {
+  const file = e.target.files[0];
+  if (!file) {
+    STATE.rawParsedData = [];
+    STATE.workbook = null;
+    EL.fileInfo.style.display = 'none';
+    EL.sourceSheetGroup.style.display = 'none';
+    updatePreviewAndValidation();
+    return;
+  }
+
+  EL.fileInfo.textContent = `Loading ${file.name}...`;
+  EL.fileInfo.style.display = 'block';
+  EL.importBtn.disabled = true;
+  EL.sourceSheetGroup.style.display = 'none';
+
+  const ext = file.name.split('.').pop().toLowerCase();
+  if (ext === 'csv') {
+    STATE.workbook = null;
+    Papa.parse(file, {
+      complete: (results) => {
+        STATE.rawParsedData = results.data;
+        EL.fileInfo.textContent = `Parsed ${results.data.length} rows.`;
+        updatePreviewAndValidation();
+      },
+      error: (err) => {
+        showStatus(err.message, true);
+        EL.fileInfo.textContent = 'Error parsing CSV.';
+      }
+    });
+  } else if (ext === 'xlsx' || ext === 'xls') {
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      const data = new Uint8Array(e.target.result);
+      STATE.workbook = XLSX.read(data, {type: 'array'});
+      
+      EL.sourceSheetSelect.innerHTML = '';
+      STATE.workbook.SheetNames.forEach(name => {
+        const opt = document.createElement('option');
+        opt.value = name;
+        opt.textContent = name;
+        EL.sourceSheetSelect.appendChild(opt);
+      });
+      
+      if (STATE.workbook.SheetNames.length > 1) {
+        EL.sourceSheetGroup.style.display = 'block';
+      }
+      
+      loadSourceSheet(STATE.workbook.SheetNames[0]);
+    };
+    reader.readAsArrayBuffer(file);
+  } else {
+    showStatus("Unsupported file type.", true);
+  }
+}
+
+function loadSourceSheet(sheetName) {
+  if (!STATE.workbook) return;
+  const worksheet = STATE.workbook.Sheets[sheetName];
+  STATE.rawParsedData = XLSX.utils.sheet_to_json(worksheet, { header: 1, defval: '' });
+  EL.fileInfo.textContent = `Parsed ${STATE.rawParsedData.length} rows from sheet "${sheetName}".`;
+  updatePreviewAndValidation();
+}
+
+function handleDestTypeChange(e) {
+  const isExisting = e.target.value === 'existing';
+  EL.existingSheetInput.style.display = isExisting ? 'block' : 'none';
+  EL.newSheetInput.style.display = isExisting ? 'none' : 'block';
+  if (isExisting) {
+    handleTargetSheetChange();
+  } else {
+    EL.headerWarning.style.display = 'none';
+    validateForm();
+  }
+}
+
+function handleTargetSheetChange() {
+  const sheetName = EL.targetSheetSelect.value;
+  if (!sheetName) return;
+
+  // 1. Fetch Headers for validation
+  google.script.run.withSuccessHandler(headers => {
+    STATE.targetHeaders = headers;
+    validateHeaders();
+  }).runRouter('getSheetHeaders', sheetName);
+
+  // 2. Load Saved Rules for this sheet
+  if (STATE.savedFlowsCache[sheetName]) {
+    applySavedRules(STATE.savedFlowsCache[sheetName]);
+  } else {
+    google.script.run.withSuccessHandler(rules => {
+      if (rules) {
+        STATE.savedFlowsCache[sheetName] = rules;
+        applySavedRules(rules);
+      } else {
+        STATE.savedFlowsCache[sheetName] = {skipTop: 0, skipBottom: 0, skipLeft: 0, skipRight: 0, replacements: []};
+      }
+    }).runRouter('getSavedFlowRules', sheetName);
+  }
+}
+
+function applySavedRules(rules) {
+  EL.skipTop.value = rules.skipTop || 0;
+  EL.skipBottom.value = rules.skipBottom || 0;
+  EL.skipLeft.value = rules.skipLeft || 0;
+  EL.skipRight.value = rules.skipRight || 0;
+  
+  EL.replacementsContainer.innerHTML = '';
+  if (rules.replacements && rules.replacements.length > 0) {
+    rules.replacements.forEach(rep => addReplacementRow(rep.find, rep.replace));
+  } else {
+    addReplacementRow();
+  }
+  
+  updatePreviewAndValidation();
+  showStatus(`Loaded saved rules for "${EL.targetSheetSelect.value}".`, false);
+  setTimeout(() => EL.statusMessage.textContent = '', 3000);
+}
+
+// UI COMPONENTS (Replacements)
+function addReplacementRow(findStr = '', replaceStr = '') {
+  const row = document.createElement('div');
+  row.className = 'replacement-row';
+  
+  const findInput = document.createElement('input');
+  findInput.type = 'text';
+  findInput.className = 'text-input';
+  findInput.placeholder = 'Find (e.g. N/A)';
+  findInput.value = findStr;
+
+  const replaceInput = document.createElement('input');
+  replaceInput.type = 'text';
+  replaceInput.className = 'text-input';
+  replaceInput.placeholder = 'Replace output';
+  replaceInput.value = replaceStr;
+
+  const delBtn = document.createElement('button');
+  delBtn.className = 'btn-remove';
+  delBtn.textContent = '✕';
+  delBtn.title = 'Remove Rule';
+  delBtn.onclick = () => {
+    row.remove();
+    updatePreviewAndValidation();
+  };
+
+  row.appendChild(findInput);
+  row.appendChild(replaceInput);
+  row.appendChild(delBtn);
+  EL.replacementsContainer.appendChild(row);
+}
+
+function getActiveReplacements() {
+  const rules = [];
+  const rows = EL.replacementsContainer.querySelectorAll('.replacement-row');
+  rows.forEach(row => {
+    const inputs = row.querySelectorAll('input');
+    const findStr = inputs[0].value;
+    const replaceStr = inputs[1].value;
+    // We allow replacing a finding string with an empty string, but finding string must exist
+    if (findStr.length > 0) {
+      rules.push({ find: findStr, replace: replaceStr });
+    }
+  });
+  return rules;
+}
+
+// CORE TRANSFORMATION ENGINE
+function transformData(rawData, limit = 0) {
+  if (!rawData || rawData.length === 0) return [];
+  
+  const skipTop = parseInt(EL.skipTop.value) || 0;
+  const skipBottom = parseInt(EL.skipBottom.value) || 0;
+  const skipLeft = parseInt(EL.skipLeft.value) || 0;
+  const skipRight = parseInt(EL.skipRight.value) || 0;
+  const replacements = getActiveReplacements();
+
+  // 1. Trim Rows
+  let endIndex = rawData.length - skipBottom;
+  if (endIndex < skipTop) endIndex = skipTop;
+  
+  if (limit > 0 && skipTop + limit < endIndex) {
+    endIndex = skipTop + limit;
+  }
+  
+  let slicedData = rawData.slice(skipTop, endIndex);
+  
+  if (slicedData.length === 0) return [];
+
+  // 1.5 Trim Columns
+  if (skipLeft > 0 || skipRight > 0) {
+    slicedData = slicedData.map(row => {
+      let colEnd = row.length - skipRight;
+      if (colEnd < skipLeft) colEnd = skipLeft;
+      return row.slice(skipLeft, colEnd);
+    });
+  }
+
+  // 2. Separate Header and Data (Deep clone to prevent mutating rawParsedData)
+  const headers = [...slicedData[0]];
+  const dataRows = slicedData.slice(1).map(row => [...row]);
+
+  // 3. Apply Replacements to Data Rows ONLY
+  if (replacements.length > 0) {
+    for (let i = 0; i < dataRows.length; i++) {
+      const row = dataRows[i];
+      for (let j = 0; j < row.length; j++) {
+        let cellVal = String(row[j] === undefined || row[j] === null ? '' : row[j]);
+        if (cellVal !== '') {
+          replacements.forEach(rule => {
+             // For exact match replacement
+             if (cellVal === rule.find) cellVal = rule.replace;
+          });
+          row[j] = cellVal;
+        }
+      }
+    }
+  }
+
+  // Re-combine
+  return [headers, ...dataRows];
+}
+
+// PREVIEW AND VALIDATION
+function updatePreviewAndValidation() {
+  renderPreview();
+  validateHeaders();
+  validateForm();
+}
+
+function renderPreview() {
+  EL.previewThead.innerHTML = '';
+  EL.previewTbody.innerHTML = '';
+  
+  if (STATE.rawParsedData.length === 0) {
+    EL.previewCount.textContent = 'No data to display.';
+    return;
+  }
+
+  const transformed = transformData(STATE.rawParsedData, 51); // Only process enough for header + preview
+  
+  if (transformed.length === 0) {
+    EL.previewCount.textContent = 'All rows skipped.';
+    return;
+  }
+
+  const skipTop = parseInt(EL.skipTop.value) || 0;
+  const skipBottom = parseInt(EL.skipBottom.value) || 0;
+  const totalRows = Math.max(0, STATE.rawParsedData.length - skipTop - skipBottom);
+
+  let displayedDataRows = transformed.length - 1; // excluding header
+  if (displayedDataRows < 0) displayedDataRows = 0;
+  const actualDataRows = Math.max(0, totalRows - 1); // assuming row 1 is header
+
+  EL.previewCount.textContent = `Previewing ${Math.min(displayedDataRows, 50)} of ${actualDataRows} data rows...`;
+
+  // Render Header
+  const headers = transformed[0];
+  headers.forEach(h => {
+    const th = document.createElement('th');
+    th.textContent = h;
+    EL.previewThead.appendChild(th);
+  });
+
+  // Render Max 50 Rows
+  const rowLimit = Math.min(transformed.length, 51); // +1 because index 0 is header
+  for (let i = 1; i < rowLimit; i++) {
+    const tr = document.createElement('tr');
+    transformed[i].forEach(cell => {
+      const td = document.createElement('td');
+      td.textContent = cell;
+      tr.appendChild(td);
+    });
+    EL.previewTbody.appendChild(tr);
+  }
+}
+
+function validateHeaders() {
+  EL.headerWarning.style.display = 'none';
+  if (STATE.rawParsedData.length === 0) return;
+  
+  const destType = document.querySelector('input[name="destType"]:checked').value;
+  if (destType !== 'existing' || STATE.targetHeaders.length === 0) return;
+
+  const transformed = transformData(STATE.rawParsedData, 1); // Just need headers
+  if (transformed.length === 0) return;
+
+  const parsedHeaders = transformed[0].map(h => String(h).trim());
+  const destHeaders = STATE.targetHeaders;
+
+  let isMatch = parsedHeaders.length === destHeaders.length;
+  if (isMatch) {
+    for (let i = 0; i < parsedHeaders.length; i++) {
+        // Case-insensitive comparison is best
+      if (parsedHeaders[i].toLowerCase() !== destHeaders[i].toLowerCase()) {
+        isMatch = false;
+        break;
+      }
+    }
+  }
+
+  if (!isMatch) {
+    EL.headerWarning.style.display = 'block';
+  }
+}
+
+function validateForm() {
+  let isValid = STATE.rawParsedData.length > 0;
+  
+  const destType = document.querySelector('input[name="destType"]:checked').value;
+  if (destType === 'new') {
+    if (EL.newSheetName.value.trim().length === 0) isValid = false;
+  } else {
+    if (!EL.targetSheetSelect.value) isValid = false;
+  }
+
+  EL.importBtn.disabled = !isValid;
+}
+
+// EXECUTION
+function executeImport() {
+  const transformed = transformData(STATE.rawParsedData);
+  if (transformed.length === 0) {
+    showStatus('No data to import.', true);
+    return;
+  }
+
+  const destType = document.querySelector('input[name="destType"]:checked').value;
+  const isNewSheet = destType === 'new';
+
+  if (!isNewSheet && EL.headerWarning.style.display !== 'none' && !STATE.overrideHeaderWarning) {
+    EL.confirmOverlay.style.display = 'flex';
+    return;
+  }
+  
+  // Reset override flag for future imports
+  STATE.overrideHeaderWarning = false;
+
+  // Gather settings
+  const targetSheetName = isNewSheet ? EL.newSheetName.value.trim() : EL.targetSheetSelect.value;
+  const method = document.querySelector('input[name="writeMethod"]:checked')?.value || 'append';
+  const skipTop = parseInt(EL.skipTop.value) || 0;
+  const skipBottom = parseInt(EL.skipBottom.value) || 0;
+  const skipLeft = parseInt(EL.skipLeft.value) || 0;
+  const skipRight = parseInt(EL.skipRight.value) || 0;
+  const replacements = getActiveReplacements();
+
+  // Async process
+  EL.importBtn.disabled = true;
+  EL.importBtn.textContent = 'Importing...';
+  showStatus('Preparing data...', false);
+
+  // Send to server
+  // Note: if `transformed` is massive, it may exceed GAS 50MB payload limits. 
+  // For V1, we send in one batch. Advanced chunking can be added later.
+  google.script.run
+    .withSuccessHandler(res => {
+      if (res.success) {
+        showStatus(res.message, false);
+        // Fire & forget rule save
+        google.script.run.runRouter('saveFlowRules', targetSheetName, skipTop, skipBottom, skipLeft, skipRight, replacements);
+        
+        // Hide modal after short delay
+        setTimeout(() => google.script.host.close(), 2000);
+      } else {
+        showStatus("Error: " + res.error, true);
+        EL.importBtn.disabled = false;
+        EL.importBtn.textContent = 'Import Data';
+      }
+    })
+    .withFailureHandler(err => {
+      showStatus("Server Error: " + err.message, true);
+      EL.importBtn.disabled = false;
+      EL.importBtn.textContent = 'Import Data';
+    })
+    .runRouter('commitImport', transformed, targetSheetName, isNewSheet, method);
+}
+
+function showStatus(msg, isError = false) {
+  EL.statusMessage.textContent = msg;
+  EL.statusMessage.className = 'status-msg ' + (isError ? 'error' : 'success');
+}
+</script>
