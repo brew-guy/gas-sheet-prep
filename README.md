@@ -75,13 +75,15 @@ This codebase is designed using **Bruce McPherson's Universal Proxy Pattern** (f
    ========================================= */
 // Add the menu initialized by the library
 function onOpen(e) {
-  DataImporter.initImporterMenu(SpreadsheetApp.getUi());
+  // Pass 'DataImporter' (or whatever you set the library identifier to)
+  // to ensure the menu finds the correct function.
+  DataImporter.initImporterMenu(SpreadsheetApp.getUi(), 'DataImporter');
 }
 
 // Bruce McPherson's Universal Library Router
 // This routes all client-side UI calls back to the library's internal functions
 function runRouter(funcName, ...args) {
-  return DataImporter[funcName].apply(this, args);
+  return DataImporter.runRouter(funcName, ...args);
 }
 ```
 

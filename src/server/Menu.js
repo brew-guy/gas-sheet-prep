@@ -9,11 +9,13 @@ function onOpen(e) {
 /**
  * Main initialization wrapper for library consumers.
  * @param {GoogleAppsScript.Base.Ui} ui 
+ * @param {string} [namespace] - Optional namespace (Library identifier) to prefix menu calls.
  */
-function initImporterMenu(ui) {
+function initImporterMenu(ui, namespace) {
   ui = ui || SpreadsheetApp.getUi();
+  const prefix = namespace ? namespace + '.' : '';
   ui.createMenu('🔌 Importer')
-    .addItem('Open Importer UI', 'openImporterModal')
+    .addItem('Open Importer UI', prefix + 'openImporterModal')
     .addToUi();
 }
 
