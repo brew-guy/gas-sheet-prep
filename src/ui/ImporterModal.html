@@ -57,6 +57,7 @@
 
         <div id="newSheetInput" class="dest-input-group" style="display:none;">
           <input type="text" id="newSheetName" placeholder="Enter new sheet name..." class="text-input" />
+          <div id="newSheetNameError" style="display:none; color: var(--color-danger); font-size: var(--font-size-small); margin-top: 4px;"></div>
         </div>
       </div>
 
@@ -127,7 +128,7 @@
           <p><strong>1. Select Input File:</strong> Choose your CSV or Excel file. Content is previewed on the right.</p>
           <p><strong>2. Select Output Sheet:</strong> Choose an existing sheet or create a new one. "Append" adds to the bottom, while "Overwrite" clears the sheet first.</p>
           <p><strong>3. Trim Data:</strong> Used to remove unwanted headers, footers, or margins by skipping rows/columns.</p>
-          <p><strong>4. Find & Replace:</strong> Define rules to clean data (e.g., replacing "N/A" with blank).</p>
+          <p><strong>4. Find & Replace:</strong> Define rules to clean data. Use <em>exact</em> mode to replace only cells whose entire value matches (e.g. "N/A" → blank), or <em>contains</em> mode to replace all occurrences of the text within each cell (e.g. strip "$" from "$1,200").</p>
           <p class="text-hint" style="margin-top: 4px;"><em>Settings are automatically saved and re-applied next time you select the same Output Sheet!</em></p>
         </div>
         <div class="modal-actions">

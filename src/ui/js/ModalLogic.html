@@ -5,61 +5,70 @@
 
 // STATE
 let STATE = {
-  rawParsedData: [],    // The raw 2D array from the file
-  availableSheets: [],  // List of strings
-  targetHeaders: [],    // Headers of the currently selected target sheet
-  savedFlowsCache: {},  // Cache of loaded rules keyed by sheet name
+  rawParsedData: [],            // The raw 2D array from the file
+  availableSheets: [],          // List of strings
+  targetHeaders: [],            // Headers of the currently selected target sheet
+  savedFlowsCache: {},          // Cache of loaded rules keyed by sheet name
   overrideHeaderWarning: false, // Flag if user confirmed mismatch
-  workbook: null // Store workbook for multi-sheet Excel files
+  headerMismatch: false,        // Whether current file/sheet headers mismatch
+  workbook: null                // Store workbook for multi-sheet Excel files
 };
 
-// DOM ELEMENTS
-const EL = {
-  fileInput: document.getElementById('fileInput'),
-  fileInfo: document.getElementById('fileInfo'),
-  sourceSheetGroup: document.getElementById('sourceSheetGroup'),
-  sourceSheetSelect: document.getElementById('sourceSheetSelect'),
-  skipTop: document.getElementById('skipTop'),
-  skipBottom: document.getElementById('skipBottom'),
-  skipLeft: document.getElementById('skipLeft'),
-  skipRight: document.getElementById('skipRight'),
-  replacementsContainer: document.getElementById('replacementsContainer'),
-  addReplacementBtn: document.getElementById('addReplacementBtn'),
-  applyReplacementsBtn: document.getElementById('applyReplacementsBtn'),
-  destTypeRadios: document.getElementsByName('destType'),
-  existingSheetInput: document.getElementById('existingSheetInput'),
-  newSheetInput: document.getElementById('newSheetInput'),
-  targetSheetSelect: document.getElementById('targetSheetSelect'),
-  writeMethodRadios: document.getElementsByName('writeMethod'),
-  headerWarning: document.getElementById('headerWarning'),
-  newSheetName: document.getElementById('newSheetName'),
-  importBtn: document.getElementById('importBtn'),
-  statusMessage: document.getElementById('statusMessage'),
-  previewThead: document.getElementById('previewThead'),
-  previewTbody: document.getElementById('previewTbody'),
-  previewCount: document.getElementById('previewCount'),
-  confirmOverlay: document.getElementById('confirmOverlay'),
-  confirmCancelBtn: document.getElementById('confirmCancelBtn'),
-  confirmProceedBtn: document.getElementById('confirmProceedBtn'),
-  helpBtn: document.getElementById('helpBtn'),
-  helpOverlay: document.getElementById('helpOverlay'),
-  closeHelpBtn: document.getElementById('closeHelpBtn')
-};
+// DOM ELEMENTS — populated in DOMContentLoaded to guarantee DOM is ready
+let EL = {};
+
+// Tracks pending status-clear timer so a new status message cancels it
+let _statusClearTimer = null;
 
 // INITIALIZATION
 document.addEventListener('DOMContentLoaded', () => {
+  EL = {
+    fileInput: document.getElementById('fileInput'),
+    fileInfo: document.getElementById('fileInfo'),
+    sourceSheetGroup: document.getElementById('sourceSheetGroup'),
+    sourceSheetSelect: document.getElementById('sourceSheetSelect'),
+    skipTop: document.getElementById('skipTop'),
+    skipBottom: document.getElementById('skipBottom'),
+    skipLeft: document.getElementById('skipLeft'),
+    skipRight: document.getElementById('skipRight'),
+    replacementsContainer: document.getElementById('replacementsContainer'),
+    addReplacementBtn: document.getElementById('addReplacementBtn'),
+    applyReplacementsBtn: document.getElementById('applyReplacementsBtn'),
+    destTypeRadios: document.getElementsByName('destType'),
+    existingSheetInput: document.getElementById('existingSheetInput'),
+    newSheetInput: document.getElementById('newSheetInput'),
+    targetSheetSelect: document.getElementById('targetSheetSelect'),
+    writeMethodRadios: document.getElementsByName('writeMethod'),
+    headerWarning: document.getElementById('headerWarning'),
+    newSheetName: document.getElementById('newSheetName'),
+    newSheetNameError: document.getElementById('newSheetNameError'),
+    importBtn: document.getElementById('importBtn'),
+    statusMessage: document.getElementById('statusMessage'),
+    previewThead: document.getElementById('previewThead'),
+    previewTbody: document.getElementById('previewTbody'),
+    previewCount: document.getElementById('previewCount'),
+    confirmOverlay: document.getElementById('confirmOverlay'),
+    confirmCancelBtn: document.getElementById('confirmCancelBtn'),
+    confirmProceedBtn: document.getElementById('confirmProceedBtn'),
+    helpBtn: document.getElementById('helpBtn'),
+    helpOverlay: document.getElementById('helpOverlay'),
+    closeHelpBtn: document.getElementById('closeHelpBtn')
+  };
+
   // Fetch available sheets
-  google.script.run.withSuccessHandler(sheets => {
-    STATE.availableSheets = sheets;
-    sheets.forEach(sheet => {
-      const opt = document.createElement('option');
-      opt.value = sheet;
-      opt.textContent = sheet;
-      EL.targetSheetSelect.appendChild(opt);
-    });
-    // Trigger initial load for first sheet
-    if(sheets.length > 0) handleTargetSheetChange();
-  }).runRouter('getAvailableSheets');
+  google.script.run
+    .withSuccessHandler(sheets => {
+      STATE.availableSheets = sheets;
+      sheets.forEach(sheet => {
+        const opt = document.createElement('option');
+        opt.value = sheet;
+        opt.textContent = sheet;
+        EL.targetSheetSelect.appendChild(opt);
+      });
+      if (sheets.length > 0) handleTargetSheetChange();
+    })
+    .withFailureHandler(err => showStatus('Could not load sheets: ' + err.message, true))
+    .runRouter('getAvailableSheets');
 
   // Attach Listeners
   EL.fileInput.addEventListener('change', handleFileSelect);
@@ -70,17 +79,17 @@ document.addEventListener('DOMContentLoaded', () => {
   EL.skipRight.addEventListener('input', updatePreviewAndValidation);
   EL.addReplacementBtn.addEventListener('click', () => addReplacementRow());
   EL.applyReplacementsBtn.addEventListener('click', updatePreviewAndValidation);
-  
+
   EL.destTypeRadios.forEach(radio => radio.addEventListener('change', handleDestTypeChange));
   EL.targetSheetSelect.addEventListener('change', handleTargetSheetChange);
   EL.newSheetName.addEventListener('input', validateForm);
-  
+
   EL.importBtn.addEventListener('click', executeImport);
 
   EL.confirmCancelBtn.addEventListener('click', () => {
     EL.confirmOverlay.style.display = 'none';
   });
-  
+
   EL.confirmProceedBtn.addEventListener('click', () => {
     EL.confirmOverlay.style.display = 'none';
     STATE.overrideHeaderWarning = true;
@@ -99,12 +108,23 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   }
 
+  // Keyboard: Escape closes open overlays
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') {
+      if (EL.helpOverlay.style.display !== 'none') EL.helpOverlay.style.display = 'none';
+      if (EL.confirmOverlay.style.display !== 'none') EL.confirmOverlay.style.display = 'none';
+    }
+  });
+
   // Add one empty replacement row to start
   addReplacementRow();
 });
 
 // EVENT HANDLERS
 function handleFileSelect(e) {
+  // Disable immediately; re-enabled by validateForm once data is parsed
+  EL.importBtn.disabled = true;
+
   const file = e.target.files[0];
   if (!file) {
     STATE.rawParsedData = [];
@@ -117,7 +137,6 @@ function handleFileSelect(e) {
 
   EL.fileInfo.textContent = `Loading ${file.name}...`;
   EL.fileInfo.style.display = 'block';
-  EL.importBtn.disabled = true;
   EL.sourceSheetGroup.style.display = 'none';
 
   const ext = file.name.split('.').pop().toLowerCase();
@@ -136,10 +155,10 @@ function handleFileSelect(e) {
     });
   } else if (ext === 'xlsx' || ext === 'xls') {
     const reader = new FileReader();
-    reader.onload = (e) => {
-      const data = new Uint8Array(e.target.result);
-      STATE.workbook = XLSX.read(data, {type: 'array'});
-      
+    reader.onload = (evt) => {
+      const data = new Uint8Array(evt.target.result);
+      STATE.workbook = XLSX.read(data, { type: 'array' });
+
       EL.sourceSheetSelect.innerHTML = '';
       STATE.workbook.SheetNames.forEach(name => {
         const opt = document.createElement('option');
@@ -147,11 +166,11 @@ function handleFileSelect(e) {
         opt.textContent = name;
         EL.sourceSheetSelect.appendChild(opt);
       });
-      
+
       if (STATE.workbook.SheetNames.length > 1) {
         EL.sourceSheetGroup.style.display = 'block';
       }
-      
+
       loadSourceSheet(STATE.workbook.SheetNames[0]);
     };
     reader.readAsArrayBuffer(file);
@@ -176,6 +195,7 @@ function handleDestTypeChange(e) {
     handleTargetSheetChange();
   } else {
     EL.headerWarning.style.display = 'none';
+    STATE.headerMismatch = false;
     validateForm();
   }
 }
@@ -185,23 +205,29 @@ function handleTargetSheetChange() {
   if (!sheetName) return;
 
   // 1. Fetch Headers for validation
-  google.script.run.withSuccessHandler(headers => {
-    STATE.targetHeaders = headers;
-    validateHeaders();
-  }).runRouter('getSheetHeaders', sheetName);
+  google.script.run
+    .withSuccessHandler(headers => {
+      STATE.targetHeaders = headers;
+      validateHeaders();
+    })
+    .withFailureHandler(err => showStatus('Could not load sheet headers: ' + err.message, true))
+    .runRouter('getSheetHeaders', sheetName);
 
-  // 2. Load Saved Rules for this sheet
+  // 2. Load Saved Rules (from cache or server)
   if (STATE.savedFlowsCache[sheetName]) {
     applySavedRules(STATE.savedFlowsCache[sheetName]);
   } else {
-    google.script.run.withSuccessHandler(rules => {
-      if (rules) {
-        STATE.savedFlowsCache[sheetName] = rules;
-        applySavedRules(rules);
-      } else {
-        STATE.savedFlowsCache[sheetName] = {skipTop: 0, skipBottom: 0, skipLeft: 0, skipRight: 0, replacements: []};
-      }
-    }).runRouter('getSavedFlowRules', sheetName);
+    google.script.run
+      .withSuccessHandler(rules => {
+        if (rules) {
+          STATE.savedFlowsCache[sheetName] = rules;
+          applySavedRules(rules);
+        } else {
+          STATE.savedFlowsCache[sheetName] = { skipTop: 0, skipBottom: 0, skipLeft: 0, skipRight: 0, replacements: [] };
+        }
+      })
+      .withFailureHandler(err => showStatus('Could not load saved rules: ' + err.message, true))
+      .runRouter('getSavedFlowRules', sheetName);
   }
 }
 
@@ -210,34 +236,48 @@ function applySavedRules(rules) {
   EL.skipBottom.value = rules.skipBottom || 0;
   EL.skipLeft.value = rules.skipLeft || 0;
   EL.skipRight.value = rules.skipRight || 0;
-  
+
   EL.replacementsContainer.innerHTML = '';
   if (rules.replacements && rules.replacements.length > 0) {
-    rules.replacements.forEach(rep => addReplacementRow(rep.find, rep.replace));
+    rules.replacements.forEach(rep => addReplacementRow(rep.find, rep.replace, rep.mode || 'equals'));
   } else {
     addReplacementRow();
   }
-  
+
   updatePreviewAndValidation();
   showStatus(`Loaded saved rules for "${EL.targetSheetSelect.value}".`, false);
-  setTimeout(() => EL.statusMessage.textContent = '', 3000);
+  _statusClearTimer = setTimeout(() => EL.statusMessage.textContent = '', 3000);
 }
 
 // UI COMPONENTS (Replacements)
-function addReplacementRow(findStr = '', replaceStr = '') {
+function addReplacementRow(findStr = '', replaceStr = '', mode = 'equals') {
   const row = document.createElement('div');
   row.className = 'replacement-row';
-  
+
   const findInput = document.createElement('input');
   findInput.type = 'text';
   findInput.className = 'text-input';
-  findInput.placeholder = 'Find (e.g. N/A)';
+  findInput.placeholder = 'Find...';
   findInput.value = findStr;
+
+  const modeSelect = document.createElement('select');
+  modeSelect.className = 'mode-select';
+  modeSelect.title = 'Exact: replaces only cells whose entire value matches. Contains: replaces all occurrences within a cell.';
+  [
+    { value: 'equals', label: 'exact' },
+    { value: 'contains', label: 'contains' }
+  ].forEach(({ value, label }) => {
+    const opt = document.createElement('option');
+    opt.value = value;
+    opt.textContent = label;
+    if (value === mode) opt.selected = true;
+    modeSelect.appendChild(opt);
+  });
 
   const replaceInput = document.createElement('input');
   replaceInput.type = 'text';
   replaceInput.className = 'text-input';
-  replaceInput.placeholder = 'Replace output';
+  replaceInput.placeholder = 'Replace with...';
   replaceInput.value = replaceStr;
 
   const delBtn = document.createElement('button');
@@ -250,6 +290,7 @@ function addReplacementRow(findStr = '', replaceStr = '') {
   };
 
   row.appendChild(findInput);
+  row.appendChild(modeSelect);
   row.appendChild(replaceInput);
   row.appendChild(delBtn);
   EL.replacementsContainer.appendChild(row);
@@ -257,14 +298,15 @@ function addReplacementRow(findStr = '', replaceStr = '') {
 
 function getActiveReplacements() {
   const rules = [];
-  const rows = EL.replacementsContainer.querySelectorAll('.replacement-row');
-  rows.forEach(row => {
+  EL.replacementsContainer.querySelectorAll('.replacement-row').forEach(row => {
     const inputs = row.querySelectorAll('input');
+    const modeSelect = row.querySelector('select');
     const findStr = inputs[0].value;
     const replaceStr = inputs[1].value;
-    // We allow replacing a finding string with an empty string, but finding string must exist
+    const mode = modeSelect ? modeSelect.value : 'equals';
+    // Allow replacing with empty string, but find string must be non-empty
     if (findStr.length > 0) {
-      rules.push({ find: findStr, replace: replaceStr });
+      rules.push({ find: findStr, replace: replaceStr, mode });
     }
   });
   return rules;
@@ -273,7 +315,7 @@ function getActiveReplacements() {
 // CORE TRANSFORMATION ENGINE
 function transformData(rawData, limit = 0) {
   if (!rawData || rawData.length === 0) return [];
-  
+
   const skipTop = parseInt(EL.skipTop.value) || 0;
   const skipBottom = parseInt(EL.skipBottom.value) || 0;
   const skipLeft = parseInt(EL.skipLeft.value) || 0;
@@ -283,13 +325,13 @@ function transformData(rawData, limit = 0) {
   // 1. Trim Rows
   let endIndex = rawData.length - skipBottom;
   if (endIndex < skipTop) endIndex = skipTop;
-  
+
   if (limit > 0 && skipTop + limit < endIndex) {
     endIndex = skipTop + limit;
   }
-  
+
   let slicedData = rawData.slice(skipTop, endIndex);
-  
+
   if (slicedData.length === 0) return [];
 
   // 1.5 Trim Columns
@@ -313,8 +355,13 @@ function transformData(rawData, limit = 0) {
         let cellVal = String(row[j] === undefined || row[j] === null ? '' : row[j]);
         if (cellVal !== '') {
           replacements.forEach(rule => {
-             // For exact match replacement
-             if (cellVal === rule.find) cellVal = rule.replace;
+            if (rule.mode === 'contains') {
+              // Replace all occurrences within the cell value
+              cellVal = cellVal.split(rule.find).join(rule.replace);
+            } else {
+              // Exact: only replace if the entire cell value matches
+              if (cellVal === rule.find) cellVal = rule.replace;
+            }
           });
           row[j] = cellVal;
         }
@@ -336,14 +383,14 @@ function updatePreviewAndValidation() {
 function renderPreview() {
   EL.previewThead.innerHTML = '';
   EL.previewTbody.innerHTML = '';
-  
+
   if (STATE.rawParsedData.length === 0) {
     EL.previewCount.textContent = 'No data to display.';
     return;
   }
 
-  const transformed = transformData(STATE.rawParsedData, 51); // Only process enough for header + preview
-  
+  const transformed = transformData(STATE.rawParsedData, 51); // header + 50 rows
+
   if (transformed.length === 0) {
     EL.previewCount.textContent = 'All rows skipped.';
     return;
@@ -353,21 +400,20 @@ function renderPreview() {
   const skipBottom = parseInt(EL.skipBottom.value) || 0;
   const totalRows = Math.max(0, STATE.rawParsedData.length - skipTop - skipBottom);
 
-  let displayedDataRows = transformed.length - 1; // excluding header
+  let displayedDataRows = transformed.length - 1;
   if (displayedDataRows < 0) displayedDataRows = 0;
-  const actualDataRows = Math.max(0, totalRows - 1); // assuming row 1 is header
+  const actualDataRows = Math.max(0, totalRows - 1); // row 0 is header
 
   EL.previewCount.textContent = `Previewing ${Math.min(displayedDataRows, 50)} of ${actualDataRows} data rows...`;
 
   // Render Header
-  const headers = transformed[0];
-  headers.forEach(h => {
+  transformed[0].forEach(h => {
     const th = document.createElement('th');
     th.textContent = h;
     EL.previewThead.appendChild(th);
   });
 
-  // Render Max 50 Rows
+  // Render Max 50 Data Rows
   const rowLimit = Math.min(transformed.length, 51); // +1 because index 0 is header
   for (let i = 1; i < rowLimit; i++) {
     const tr = document.createElement('tr');
@@ -382,12 +428,14 @@ function renderPreview() {
 
 function validateHeaders() {
   EL.headerWarning.style.display = 'none';
+  STATE.headerMismatch = false;
+
   if (STATE.rawParsedData.length === 0) return;
-  
+
   const destType = document.querySelector('input[name="destType"]:checked').value;
   if (destType !== 'existing' || STATE.targetHeaders.length === 0) return;
 
-  const transformed = transformData(STATE.rawParsedData, 1); // Just need headers
+  const transformed = transformData(STATE.rawParsedData, 1); // only need header row
   if (transformed.length === 0) return;
 
   const parsedHeaders = transformed[0].map(h => String(h).trim());
@@ -396,7 +444,6 @@ function validateHeaders() {
   let isMatch = parsedHeaders.length === destHeaders.length;
   if (isMatch) {
     for (let i = 0; i < parsedHeaders.length; i++) {
-        // Case-insensitive comparison is best
       if (parsedHeaders[i].toLowerCase() !== destHeaders[i].toLowerCase()) {
         isMatch = false;
         break;
@@ -406,16 +453,28 @@ function validateHeaders() {
 
   if (!isMatch) {
     EL.headerWarning.style.display = 'block';
+    STATE.headerMismatch = true;
   }
 }
 
 function validateForm() {
   let isValid = STATE.rawParsedData.length > 0;
-  
+
   const destType = document.querySelector('input[name="destType"]:checked').value;
   if (destType === 'new') {
-    if (EL.newSheetName.value.trim().length === 0) isValid = false;
+    const name = EL.newSheetName.value.trim();
+    if (name.length === 0) {
+      isValid = false;
+      EL.newSheetNameError.style.display = 'none';
+    } else if (name.startsWith('_')) {
+      isValid = false;
+      EL.newSheetNameError.textContent = 'Sheet names starting with "_" are reserved.';
+      EL.newSheetNameError.style.display = 'block';
+    } else {
+      EL.newSheetNameError.style.display = 'none';
+    }
   } else {
+    EL.newSheetNameError.style.display = 'none';
     if (!EL.targetSheetSelect.value) isValid = false;
   }
 
@@ -433,11 +492,11 @@ function executeImport() {
   const destType = document.querySelector('input[name="destType"]:checked').value;
   const isNewSheet = destType === 'new';
 
-  if (!isNewSheet && EL.headerWarning.style.display !== 'none' && !STATE.overrideHeaderWarning) {
+  if (!isNewSheet && STATE.headerMismatch && !STATE.overrideHeaderWarning) {
     EL.confirmOverlay.style.display = 'flex';
     return;
   }
-  
+
   // Reset override flag for future imports
   STATE.overrideHeaderWarning = false;
 
@@ -450,23 +509,41 @@ function executeImport() {
   const skipRight = parseInt(EL.skipRight.value) || 0;
   const replacements = getActiveReplacements();
 
-  // Async process
   EL.importBtn.disabled = true;
   EL.importBtn.textContent = 'Importing...';
   showStatus('Preparing data...', false);
 
-  // Send to server
-  // Note: if `transformed` is massive, it may exceed GAS 50MB payload limits. 
+  // Note: if `transformed` is massive, it may exceed GAS 50MB payload limits.
   // For V1, we send in one batch. Advanced chunking can be added later.
   google.script.run
     .withSuccessHandler(res => {
       if (res.success) {
-        showStatus(res.message, false);
-        // Fire & forget rule save
-        google.script.run.runRouter('saveFlowRules', targetSheetName, skipTop, skipBottom, skipLeft, skipRight, replacements);
-        
-        // Hide modal after short delay
-        setTimeout(() => google.script.host.close(), 2000);
+        // Update cache with rules just applied so re-selecting the sheet is fresh
+        STATE.savedFlowsCache[targetSheetName] = { skipTop, skipBottom, skipLeft, skipRight, replacements };
+
+        // Show success message with a cancellable auto-close link
+        EL.statusMessage.textContent = res.message;
+        EL.statusMessage.className = 'status-msg success';
+
+        const keepOpenBtn = document.createElement('button');
+        keepOpenBtn.textContent = 'Keep open';
+        keepOpenBtn.className = 'keep-open-btn';
+        EL.statusMessage.appendChild(keepOpenBtn);
+
+        const closeTimer = setTimeout(() => google.script.host.close(), 3000);
+
+        keepOpenBtn.addEventListener('click', () => {
+          clearTimeout(closeTimer);
+          EL.statusMessage.textContent = '';
+          EL.statusMessage.className = 'status-msg';
+          EL.importBtn.disabled = false;
+          EL.importBtn.textContent = 'Import Data';
+        });
+
+        // Fire & forget rule save — silent on failure since import already succeeded
+        google.script.run
+          .withFailureHandler(() => {})
+          .runRouter('saveFlowRules', targetSheetName, skipTop, skipBottom, skipLeft, skipRight, replacements);
       } else {
         showStatus("Error: " + res.error, true);
         EL.importBtn.disabled = false;
@@ -482,6 +559,7 @@ function executeImport() {
 }
 
 function showStatus(msg, isError = false) {
+  clearTimeout(_statusClearTimer);
   EL.statusMessage.textContent = msg;
   EL.statusMessage.className = 'status-msg ' + (isError ? 'error' : 'success');
 }

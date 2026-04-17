@@ -11,7 +11,7 @@ function getAvailableSheets() {
   const sheets = SpreadsheetApp.getActiveSpreadsheet().getSheets();
   return sheets
     .map(sheet => sheet.getName())
-    .filter(name => !RESERVED_SHEETS.includes(name));
+    .filter(name => !name.startsWith('_'));
 }
 
 /**
@@ -49,12 +49,18 @@ function getSavedFlowRules(sheetName) {
   
   for (let i = 0; i < data.length; i++) {
     if (data[i][0] === sheetName) {
+      let replacements = [];
+      try {
+        replacements = data[i][5] ? JSON.parse(data[i][5]) : [];
+      } catch (_) {
+        replacements = [];
+      }
       return {
         skipTop: Number(data[i][1]) || 0,
         skipBottom: Number(data[i][2]) || 0,
         skipLeft: Number(data[i][3]) || 0,
         skipRight: Number(data[i][4]) || 0,
-        replacements: data[i][5] ? JSON.parse(data[i][5]) : []
+        replacements
       };
     }
   }
@@ -111,6 +117,10 @@ function commitImport(data, targetSheetName, isNewSheet, method) {
   try {
     const ss = SpreadsheetApp.getActiveSpreadsheet();
     if (!ss) throw new Error("Could not access active spreadsheet.");
+
+    if (targetSheetName.startsWith('_')) {
+      throw new Error(`Sheet name "${targetSheetName}" is reserved and cannot be used as an import target.`);
+    }
     
     let sheet;
     if (isNewSheet) {

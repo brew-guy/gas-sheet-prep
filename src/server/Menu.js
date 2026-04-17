@@ -2,7 +2,7 @@
  * Creates a custom menu in Google Sheets when the document opens (Standalone Mode).
  * @param {GoogleAppsScript.Events.SheetsOnOpen} e 
  */
-function onOpen(e) {
+function onOpen() {
   initImporterMenu(SpreadsheetApp.getUi());
 }
 
@@ -26,6 +26,9 @@ function initImporterMenu(ui, namespace) {
  * @param  {...any} args 
  */
 function runRouter(funcName, ...args) {
+  if (typeof this[funcName] !== 'function') {
+    throw new Error('Unknown router method: ' + funcName);
+  }
   return this[funcName].apply(this, args);
 }
 
